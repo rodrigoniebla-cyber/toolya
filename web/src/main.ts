@@ -1082,6 +1082,17 @@ async function refreshVideoDevices(askPermission: boolean) {
   }
 }
 $("ps-scan").addEventListener("click", () => void refreshVideoDevices(true));
+
+// Sim display preset: screen/window source, tuned for latency over sharpness.
+$("ps-sim").addEventListener("click", () => {
+  psSource.value = "screen";
+  psRes.value = "720";
+  psFpsSlider.value = "60";
+  psQuality.value = "50";
+  psFpsSlider.dispatchEvent(new Event("input"));
+  psQuality.dispatchEvent(new Event("input"));
+  log("pc-stream: sim preset — 720p · 60 fps · q50. Start streaming and share the sim window (borderless windowed).");
+});
 // Pick up grabbers plugged in / unplugged while the page is open (labels only if already permitted).
 navigator.mediaDevices?.addEventListener?.("devicechange", () => void refreshVideoDevices(false));
 void refreshVideoDevices(false);
@@ -1112,7 +1123,7 @@ $("ps-stream").addEventListener("click", async () => {
       height: parseInt(psRes.value),
       preview: $("ps-preview") as HTMLCanvasElement,
       onStatus: (info) => {
-        psStats.textContent = `${info.fps} fps · ${info.kbps} KB/s · ${info.encMs}ms enc · ${info.dropped} drop`;
+        psStats.textContent = `${info.fps} fps · ${info.latMs}ms lat · ${info.kbps} KB/s · ${info.encMs}ms enc · ${info.dropped} drop`;
         $("ps-status").textContent = "streaming";
       },
       onStop: (reason) => {

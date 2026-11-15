@@ -459,6 +459,7 @@ footer b{color:var(--fg);font-weight:600}
                   </select>
                 </label>
                 <button class="btn sm" id="ps-scan" type="button" title="Find analog grabbers / USB video receivers plugged into this computer">Find video devices</button>
+                <button class="btn sm tonal" id="ps-sim" type="button" title="Screen source, 720p, 60 fps, quality 50 — tuned for low latency">Sim display preset</button>
               </div>
               <div class="row" style="flex-wrap:wrap;gap:8px">
                 <label style="font-size:12px;display:flex;align-items:center;gap:6px">
@@ -483,6 +484,7 @@ footer b{color:var(--fg);font-weight:600}
                 <button class="btn tonal" id="ps-stream" type="button" disabled>Start streaming</button>
               </div>
               <p class="hint">Stream your PC screen to the goggles over USB. <code>fb_receiver</code> is pushed automatically; JPEG frames go through the ADB connection. Needs the natartos <b>display hook</b> for fb_shared inject.</p>
+              <p class="hint"><b>Sim display (Liftoff, Velocidrone, Uncrashed, DRL…):</b> plug the goggles and your radio (e.g. the RC&nbsp;3, in its USB/simulator mode) into this computer. The sim reads the radio directly. Click <b>Sim display preset</b> → <b>Start streaming</b> and share the sim window; run the sim <i>borderless windowed</i>, because exclusive full screen often can't be captured. Streaming keeps going while the sim has focus. Watch <b>lat</b> in the stats: it's capture → USB write and doesn't include the goggles' decode/display time. If it climbs, drop to 480p or lower the quality.</p>
               <p class="hint"><b>Goggles as a second monitor:</b> the browser can only share a screen that already exists. To extend your desktop instead of mirroring it, create a virtual display (a virtual/dummy display driver on Windows or macOS, <code>xrandr</code> on Linux), then pick that screen when sharing.</p>
               <p class="hint"><b>Analog video in:</b> plug an analog receiver with USB (UVC) output, or a composite/AV&nbsp;→&nbsp;USB grabber, into <i>this computer</i>, click <b>Find video devices</b>, and pick it as the source. 4:3 video is pillarboxed, not stretched. The video goes analog → PC → JPEG → USB, which adds latency. Fine for watching, but measure it before you fly on it.</p>
             </div>

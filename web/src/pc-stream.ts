@@ -9,6 +9,7 @@
 import type { Adb } from "@yume-chan/adb";
 import { run } from "./adb";
 import { getContract } from "./wasm";
+import type { WorkerFrameMsg, WorkerErrorMsg, WorkerEndMsg } from "./pc-stream-worker";
 
 const FB_RECEIVER_VENDOR = "/vendor/natartos/apps/stream/fb_receiver";
 const FB_RECEIVER_TMP = "/data/local/tmp/fb_receiver";
@@ -57,7 +58,7 @@ export interface PcStreamOpts {
   fpsCap: number;     // 5–60
   height?: number;    // capture height (720 default); width derived 16:9
   preview: HTMLCanvasElement;
-  onStatus?: (info: { fps: number; frames: number; kbps: number; encMs: number; avgKb: number; dropped: number }) => void;
+  onStatus?: (info: { fps: number; frames: number; kbps: number; encMs: number; avgKb: number; dropped: number; latMs: number }) => void;
   onError?: (err: string) => void;
   onStop?: (reason: string) => void;
 }
@@ -87,7 +88,7 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   // Stats
   let frames = 0, sentBytes = 0, dropped = 0;
   let lastT = performance.now(), lastF = 0, lastB = 0;
-  let encMs = 0, avgSize = 0;
+  let encMs = 0, avgSize = 0, latMs = 0;
 
   function tick() {
     const now = performance.now();
@@ -101,6 +102,7 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
         encMs: +encMs.toFixed(1),
         avgKb: +(avgSize / 1024).toFixed(1),
         dropped,
+        latMs: Math.round(latMs),
       });
       lastT = now;
       lastF = frames;
@@ -175,6 +177,63 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   let sending = false;
   let lastFrame = 0;
   let animFrame = 0;
+  let worker: Worker | null = null;
+  let previewTimer = 0;
+
+  // Preferred path (Chrome/Edge): capture + encode in a worker. Unlike the
+  // requestAnimationFrame loop below, it keeps streaming while the toolya tab
+  // is hidden or covered — e.g. a full-screen sim has focus.
+  const useWorker = typeof MediaStreamTrackProcessor !== "undefined" && typeof OffscreenCanvas !== "undefined";
+
+  /** Main-thread preview at ~10 fps (fit, black bars). Throttled when hidden — fine. */
+  function drawPreview() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) return;
+    const pw = opts.preview.width, ph = opts.preview.height;
+    const k = Math.min(pw / vw, ph / vh);
+    const dw = Math.round(vw * k), dh = Math.round(vh * k);
+    const pctx = opts.preview.getContext("2d")!;
+    pctx.fillStyle = "#000";
+    pctx.fillRect(0, 0, pw, ph);
+    pctx.drawImage(video, Math.round((pw - dw) / 2), Math.round((ph - dh) / 2), dw, dh);
+  }
+
+  if (useWorker) {
+    const processor = new MediaStreamTrackProcessor({ track: mediaStream.getVideoTracks()[0] });
+    worker = new Worker(new URL("./pc-stream-worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = async (e: MessageEvent<WorkerFrameMsg | WorkerErrorMsg | WorkerEndMsg>) => {
+      const m = e.data;
+      if (!running) return;
+      if (m.type === "error") { opts.onError?.("encode failed: " + m.message); return; }
+      if (m.type === "end") { void stop(source.kind === "device" ? "video device disconnected" : "share stopped"); return; }
+      dropped += m.dropped;
+      encMs = m.encMs;
+      const buf = new Uint8Array(m.jpeg);
+      avgSize = avgSize > 0 ? avgSize * 0.9 + buf.length * 0.1 : buf.length;
+      try {
+        await writer.write(buf);
+      } catch (err) {
+        if (running) {
+          opts.onError?.("write failed: " + (err as Error).message);
+          void stop("write error");
+        }
+        return;
+      }
+      frames++;
+      sentBytes += buf.length;
+      // capture → written to USB (both clocks absolute, so worker/main align)
+      const lat = performance.timeOrigin + performance.now() - m.tCapture;
+      latMs = latMs > 0 ? latMs * 0.9 + lat * 0.1 : lat;
+      tick();
+      worker?.postMessage({ type: "credit" }); // ready for the next (newest) frame
+    };
+    worker.onerror = (e) => { if (running) { opts.onError?.("worker: " + e.message); void stop("worker error"); } };
+    worker.postMessage(
+      { type: "start", readable: processor.readable, maxH: capH, quality: opts.quality, fpsCap: opts.fpsCap, pillarbox },
+      [processor.readable as unknown as Transferable],
+    );
+    previewTimer = window.setInterval(drawPreview, 100);
+  }
 
   function loop() {
     if (!running) return;
@@ -242,12 +301,14 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
     }, "image/jpeg", opts.quality);
   }
 
-  animFrame = requestAnimationFrame(loop);
+  if (!useWorker) animFrame = requestAnimationFrame(loop);
 
   async function stop(reason = "stopped") {
     if (!running) return;
     running = false;
     if (animFrame) cancelAnimationFrame(animFrame);
+    if (previewTimer) clearInterval(previewTimer);
+    if (worker) { worker.postMessage({ type: "stop" }); worker.terminate(); worker = null; }
     // Signal the overlay to stop injecting (<100ms) and kill fb_receiver.
     // Must run while adb is still alive — disconnect() stops us before closing.
     try { await run(adb, `touch ${fbStop}`); } catch { /* ignore */ }
