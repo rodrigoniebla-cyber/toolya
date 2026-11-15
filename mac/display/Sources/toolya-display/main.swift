@@ -150,7 +150,7 @@ func makeVirtualDisplay() -> CGVirtualDisplay {
         CGVirtualDisplayMode(width: 1600, height: 900, refreshRate: 60),
         CGVirtualDisplayMode(width: 1280, height: 720, refreshRate: 60),
     ]
-    guard display.applySettings(settings) else { die("could not apply virtual display modes") }
+    guard display.apply(settings) else { die("could not apply virtual display modes") }
     return display
 }
 
