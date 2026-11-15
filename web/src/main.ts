@@ -7,7 +7,7 @@ import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninst
 import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile } from "./adb";
 import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
-import { startPcStream, type PcStreamHandle } from "./pc-stream";
+import { startPcStream, listCaptureDevices, type PcStreamHandle, type PcStreamSource } from "./pc-stream";
 import { sendKey, holdKey } from "./input";
 import type { Adb } from "@yume-chan/adb";
 
@@ -1064,6 +1064,33 @@ const psStats = $("ps-stats");
 psQuality.addEventListener("input", () => { $("ps-qval").textContent = psQuality.value + "%"; });
 psFpsSlider.addEventListener("input", () => { $("ps-fpsval").textContent = psFpsSlider.value; });
 
+// Source picker: PC screen, or a video capture device (analog grabber / UVC receiver).
+const psSource = $("ps-source") as HTMLSelectElement;
+async function refreshVideoDevices(askPermission: boolean) {
+  const keep = psSource.value;
+  let devs;
+  try { devs = await listCaptureDevices(askPermission); }
+  catch (e) { log(`video in: ${(e as Error).message}`); return; }
+  // Rebuild: keep the screen option, replace the device options.
+  while (psSource.options.length > 1) psSource.remove(1);
+  for (const d of devs) psSource.add(new Option(`Video in: ${d.label}`, `dev:${d.deviceId}`));
+  psSource.value = [...psSource.options].some((o) => o.value === keep) ? keep : "screen";
+  if (askPermission) {
+    log(devs.length
+      ? `video in: ${devs.length} device(s) — ${devs.map((d) => d.label).join(", ")}`
+      : "video in: no video capture devices found — plug in the analog grabber / receiver and retry");
+  }
+}
+$("ps-scan").addEventListener("click", () => void refreshVideoDevices(true));
+// Pick up grabbers plugged in / unplugged while the page is open (labels only if already permitted).
+navigator.mediaDevices?.addEventListener?.("devicechange", () => void refreshVideoDevices(false));
+void refreshVideoDevices(false);
+
+function psSelectedSource(): PcStreamSource {
+  const v = psSource.value;
+  return v.startsWith("dev:") ? { kind: "device", deviceId: v.slice(4) } : { kind: "screen" };
+}
+
 $("ps-stream").addEventListener("click", async () => {
   if (pcStream?.active) {
     pcStream.stop();
@@ -1079,6 +1106,7 @@ $("ps-stream").addEventListener("click", async () => {
   try {
     pcStream = await startPcStream({
       adb,
+      source: psSelectedSource(),
       quality: parseInt(psQuality.value) / 100,
       fpsCap: parseInt(psFpsSlider.value),
       height: parseInt(psRes.value),
@@ -1098,7 +1126,8 @@ $("ps-stream").addEventListener("click", async () => {
         log(`pc-stream: ${err}`);
       },
     });
-    log(`pc-stream: active (JPEG over ADB stdin → fb_receiver)`);
+    const srcLabel = psSource.selectedOptions[0]?.textContent ?? "screen";
+    log(`pc-stream: active — ${srcLabel} (JPEG over ADB stdin → fb_receiver)`);
   } catch (e) {
     log(`pc-stream: ${(e as Error).message}`);
     $("ps-status").textContent = "error";

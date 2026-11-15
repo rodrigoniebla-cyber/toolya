@@ -450,8 +450,16 @@ footer b{color:var(--fg);font-weight:600}
             </div>
           </details>
           <details class="card" id="pc-stream-card">
-            <summary>PC Stream <span class="state" id="ps-status">connect ADB first</span></summary>
+            <summary>PC Stream &amp; video in <span class="state" id="ps-status">connect ADB first</span></summary>
             <div class="details-body">
+              <div class="row" style="flex-wrap:wrap;gap:8px">
+                <label style="font-size:12px;display:flex;align-items:center;gap:6px">
+                  Source <select class="field" id="ps-source" style="width:auto;max-width:260px">
+                    <option value="screen" selected>PC screen / window (goggles as display)</option>
+                  </select>
+                </label>
+                <button class="btn sm" id="ps-scan" type="button" title="Find analog grabbers / USB video receivers plugged into this computer">Find video devices</button>
+              </div>
               <div class="row" style="flex-wrap:wrap;gap:8px">
                 <label style="font-size:12px;display:flex;align-items:center;gap:6px">
                   Quality <input type="range" id="ps-quality" min="10" max="95" value="60" style="width:80px">
@@ -475,6 +483,8 @@ footer b{color:var(--fg);font-weight:600}
                 <button class="btn tonal" id="ps-stream" type="button" disabled>Start streaming</button>
               </div>
               <p class="hint">Stream your PC screen to the goggles over USB. <code>fb_receiver</code> is pushed automatically; JPEG frames go through the ADB connection. Needs the natartos <b>display hook</b> for fb_shared inject.</p>
+              <p class="hint"><b>Goggles as a second monitor:</b> the browser can only share a screen that already exists. To extend your desktop instead of mirroring it, create a virtual display (a virtual/dummy display driver on Windows or macOS, <code>xrandr</code> on Linux), then pick that screen when sharing.</p>
+              <p class="hint"><b>Analog video in:</b> plug an analog receiver with USB (UVC) output, or a composite/AV&nbsp;→&nbsp;USB grabber, into <i>this computer</i>, click <b>Find video devices</b>, and pick it as the source. 4:3 video is pillarboxed, not stretched. The video goes analog → PC → JPEG → USB, which adds latency. Fine for watching, but measure it before you fly on it.</p>
             </div>
           </details>
           <details class="card" hidden>

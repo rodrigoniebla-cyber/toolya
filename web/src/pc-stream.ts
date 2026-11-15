@@ -20,8 +20,39 @@ export interface PcStreamHandle {
   readonly fps: number;
 }
 
+/**
+ * What to send to the goggles:
+ *  - "screen": the PC screen / a window / a tab (getDisplayMedia) — goggles as a display.
+ *  - "device": a video capture device (getUserMedia). This is how analog video gets in:
+ *    an analog FPV receiver with USB (UVC) output, or a composite/AV → USB grabber,
+ *    plugged into the computer shows up here like a webcam.
+ */
+export type PcStreamSource =
+  | { kind: "screen" }
+  | { kind: "device"; deviceId: string };
+
+export interface CaptureDevice { deviceId: string; label: string }
+
+/**
+ * List video capture devices (analog grabbers, UVC receivers, webcams).
+ * Browsers hide device labels until camera permission is granted once, so if
+ * `askPermission` is set and labels are missing we open (and close) a stream first.
+ */
+export async function listCaptureDevices(askPermission = false): Promise<CaptureDevice[]> {
+  const md = navigator.mediaDevices;
+  if (!md?.enumerateDevices) return [];
+  let devs = (await md.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  if (askPermission && devs.some((d) => !d.label)) {
+    const s = await md.getUserMedia({ video: true, audio: false });
+    s.getTracks().forEach((t) => t.stop());
+    devs = (await md.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  }
+  return devs.map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Video device ${i + 1}` }));
+}
+
 export interface PcStreamOpts {
   adb: Adb;
+  source?: PcStreamSource; // default: screen
   quality: number;    // 0.1–0.95
   fpsCap: number;     // 5–60
   height?: number;    // capture height (720 default); width derived 16:9
@@ -83,20 +114,41 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   // thread would see fb_stop and tear down immediately on this start.
   await run(adb, `rm -f ${fbStop}`).catch(() => { /* ignore */ });
 
-  // Capture screen
+  // Capture: the PC screen, or a video capture device (analog grabber / UVC receiver).
+  const source = opts.source ?? { kind: "screen" };
   let mediaStream: MediaStream;
-  try {
-    // Lower capture resolution → cheaper JPEG-encode + ADB transfer; fb_receiver
-    // letterboxes non-1080p input, so the goggles still fill the screen.
-    const capH = opts.height ?? 720;
-    const capW = Math.round((capH * 16) / 9);
-    mediaStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: capW }, height: { ideal: capH }, frameRate: { ideal: opts.fpsCap } },
-      audio: false,
-    });
-  } catch (e) {
-    throw new Error("Screen capture denied: " + (e as Error).message);
+  // Lower capture resolution → cheaper JPEG-encode + ADB transfer; fb_receiver
+  // letterboxes non-1080p input, so the goggles still fill the screen.
+  const capH = opts.height ?? 720;
+  const capW = Math.round((capH * 16) / 9);
+  if (source.kind === "device") {
+    try {
+      // Only ask for a height: analog grabbers deliver 4:3 (720×480 NTSC, 720×576
+      // PAL) and forcing 16:9 makes some drivers crop or reject the request.
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: { exact: source.deviceId },
+          height: { ideal: capH },
+          frameRate: { ideal: opts.fpsCap },
+        },
+        audio: false,
+      });
+    } catch (e) {
+      throw new Error("Video device unavailable: " + (e as Error).message);
+    }
+  } else {
+    try {
+      mediaStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: capW }, height: { ideal: capH }, frameRate: { ideal: opts.fpsCap } },
+        audio: false,
+      });
+    } catch (e) {
+      throw new Error("Screen capture denied: " + (e as Error).message);
+    }
   }
+  // Device sources are pillarboxed to 16:9 here so 4:3 analog video keeps its
+  // shape on the goggles' 16:9 panel instead of being stretched.
+  const pillarbox = source.kind === "device";
 
   // If menu already launched fb_receiver (FIFO exists), connect via pipe;
   // otherwise spawn fb_receiver directly reading from stdin.
@@ -116,7 +168,8 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   video.muted = true;
   video.play();
 
-  mediaStream.getVideoTracks()[0].addEventListener("ended", () => stop("share stopped"));
+  mediaStream.getVideoTracks()[0].addEventListener("ended", () =>
+    stop(source.kind === "device" ? "video device disconnected" : "share stopped"));
 
   const offscreen = document.createElement("canvas");
   let sending = false;
@@ -132,14 +185,30 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
     if (sending) { dropped++; return; }
     if (!video.videoWidth) return;
 
-    offscreen.width = video.videoWidth;
-    offscreen.height = video.videoHeight;
+    const vw = video.videoWidth, vh = video.videoHeight;
     const octx = offscreen.getContext("2d")!;
-    octx.drawImage(video, 0, 0);
+    if (pillarbox && Math.abs(vw / vh - 16 / 9) > 0.01) {
+      // Fit the frame into a 16:9 canvas of the same height (black bars).
+      const ow = Math.max(vw, Math.round((vh * 16) / 9));
+      const oh = Math.round((ow * 9) / 16);
+      if (offscreen.width !== ow || offscreen.height !== oh) {
+        offscreen.width = ow;
+        offscreen.height = oh;
+      }
+      octx.fillStyle = "#000";
+      octx.fillRect(0, 0, ow, oh);
+      octx.drawImage(video, Math.round((ow - vw) / 2), Math.round((oh - vh) / 2), vw, vh);
+    } else {
+      if (offscreen.width !== vw || offscreen.height !== vh) {
+        offscreen.width = vw;
+        offscreen.height = vh;
+      }
+      octx.drawImage(video, 0, 0);
+    }
 
-    // Preview
+    // Preview: show exactly what is sent.
     const pctx = opts.preview.getContext("2d")!;
-    pctx.drawImage(video, 0, 0, opts.preview.width, opts.preview.height);
+    pctx.drawImage(offscreen, 0, 0, opts.preview.width, opts.preview.height);
 
     sending = true;
     const t0 = performance.now();
