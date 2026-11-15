@@ -31,3 +31,6 @@ ROADMAP.md
 .dev.vars
 .cert/
 .idea/
+
+# Swift (mac/display)
+.build/

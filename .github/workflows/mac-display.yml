@@ -1,0 +1,18 @@
+name: macOS display
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["mac/**", ".github/workflows/mac-display.yml"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build toolya-display
+        working-directory: mac/display
+        run: swift build -c release
+      - name: Smoke test (--help)
+        working-directory: mac/display
+        run: .build/release/toolya-display --help

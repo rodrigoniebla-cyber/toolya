@@ -21,6 +21,8 @@ screen, the usage counters, and a handful of desk-development tweaks.
 
 - A **root shell** on the goggles — a one-shot command REPL with a sticky `cd` (the G3's
   *interactive* shell is broken on-device, so we run commands cleanly instead).
+- **Use the goggles as an external display** on macOS — a real extra monitor over the USB cable
+  (`mac/display`, see its README). Works as a sim display too.
 - **Mirror the screen** — 60 fps MJPEG streaming when the natartos display hook is active, with raw framebuffer grab as fallback.
 - **Install and manage natartos** — the on-device mod framework, one-click from the web UI with version management and rollback.
 - **Play Doom.** *itrunsdoom, finally.*
