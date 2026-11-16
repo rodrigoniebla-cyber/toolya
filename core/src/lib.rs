@@ -161,9 +161,18 @@ pub fn enable_plan() -> EnablePlan {
         init_count: 4,
         candidates,
         expect: b"</dji>".to_vec(),
+        // DUML lives on a different interface across firmware builds. The handshake
+        // (read-only: reads the `</dji>` version string) runs on each until one
+        // answers; only that pipe then gets the enable candidates. Newer 8-interface
+        // builds expose DUML on the vendor-class pipes (0xff/0x43), of which there are
+        // five (iface 3–7) — so all are listed, not just iface 4.
         ports: vec![
             DumlPort { iface: 1, ep_out: 1, ep_in: 1 }, // build 38460+ (CDC Data)
-            DumlPort { iface: 4, ep_out: 4, ep_in: 5 }, // earlier builds
+            DumlPort { iface: 3, ep_out: 3, ep_in: 4 }, // 8-iface build, vendor pipe 1
+            DumlPort { iface: 4, ep_out: 4, ep_in: 5 }, // earlier builds / vendor pipe 2
+            DumlPort { iface: 5, ep_out: 5, ep_in: 6 }, // vendor pipe 3
+            DumlPort { iface: 6, ep_out: 6, ep_in: 7 }, // vendor pipe 4
+            DumlPort { iface: 7, ep_out: 7, ep_in: 8 }, // vendor pipe 5
         ],
     }
 }
