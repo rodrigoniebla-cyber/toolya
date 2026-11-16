@@ -242,6 +242,26 @@ export interface BootStartStatus {
   enabled: boolean; // all three → menu shows at power-on
 }
 
+// Optional self-provisioning payload. A delivered single-file build can inject
+// window.__NATARTOS_BOOT_FILES__ = [{path, b64, mode}] with the boot files
+// (boot.sh, updated inject.sh, bootmenu binary, natartos.rc). When present, the
+// toggle installs them straight to the goggles — no release/CLI needed.
+interface BootFile { path: string; b64: string; mode: string }
+function bootPayload(): BootFile[] | null {
+  const g = (globalThis as unknown as { __NATARTOS_BOOT_FILES__?: unknown }).__NATARTOS_BOOT_FILES__;
+  return Array.isArray(g) && g.length > 0 ? (g as BootFile[]) : null;
+}
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function parentDir(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i > 0 ? p.slice(0, i) : "/";
+}
+
 export async function natartosBootStatus(adb: Adb): Promise<BootStartStatus> {
   const has = async (p: string) =>
     (await run(adb, `[ -f ${p} ] && echo 1 || echo 0`)).trim() === "1";
@@ -254,20 +274,39 @@ export async function natartosBootStatus(adb: Adb): Promise<BootStartStatus> {
 /** Turn the power-on Stock/Modified menu on or off.
  *  on  → install the init .rc (if missing) + set the enable flag.
  *  off → clear the flag (the .rc stays but is inert). */
-export async function natartosBootStart(adb: Adb, on: boolean): Promise<void> {
-  if (on) {
+export async function natartosBootStart(
+  adb: Adb,
+  on: boolean,
+  log?: (s: string) => void,
+): Promise<void> {
+  if (!on) {
+    await run(adb, `rm -f ${BOOT_FLAG}`);
+    await run(adb, "sync");
+    return;
+  }
+
+  await run(adb, "mount -o remount,rw /vendor");
+
+  const payload = bootPayload();
+  if (payload) {
+    // Self-contained install: push every boot file from the embedded payload.
+    for (const f of payload) {
+      log?.(`pushing ${f.path}…`);
+      await run(adb, `mkdir -p ${parentDir(f.path)}`);
+      await pushFile(adb, f.path, b64ToBytes(f.b64));
+      await run(adb, `chmod ${f.mode} ${f.path}`);
+    }
+  } else {
+    // No payload: the boot files must already be installed with natartos.
     const sh = (await run(adb, `[ -f ${BOOT_SH_DEVICE} ] && echo 1 || echo 0`)).trim() === "1";
     if (!sh) throw new Error("boot.sh is not installed — install/update natartos first.");
-    await run(adb, "mount -o remount,rw /vendor");
     await run(adb, "mkdir -p /vendor/etc/init");
     await pushFile(adb, BOOT_RC_DEVICE, new TextEncoder().encode(BOOT_RC_CONTENT));
     await run(adb, `chmod 644 ${BOOT_RC_DEVICE}`);
-    await run(adb, `touch ${BOOT_FLAG}`);
-    await run(adb, "sync");
-  } else {
-    await run(adb, `rm -f ${BOOT_FLAG}`);
-    await run(adb, "sync");
   }
+
+  await run(adb, `touch ${BOOT_FLAG}`);
+  await run(adb, "sync");
 }
 
 export async function setUsbMode(adb: Adb, mode: UsbMode): Promise<void> {

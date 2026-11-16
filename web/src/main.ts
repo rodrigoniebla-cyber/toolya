@@ -562,14 +562,17 @@ $("nat-bootstart").addEventListener("change", async (e) => {
     return;
   }
   log(`natartos boot start → ${on ? "ON (menu at power-on)" : "OFF (stock at power-on)"}`);
+  if (on) showNatBanner("Installing boot start…", "busy");
   try {
-    await natartosBootStart(adb, on);
+    await natartosBootStart(adb, on, log);
     showNatBanner(on
-      ? "Boot start ON — the Stock/Modified menu will show at power-on."
+      ? "Boot start ON — reboot the goggles and the Stock/Modified menu will show at power-on."
       : "Boot start OFF — power-on returns to stock.", "ok");
+    await refreshNatartos();
   } catch (err) {
     ck.checked = !on;
     reportAdbError("natartos boot start", err);
+    showNatBanner("Boot start failed: " + friendlyError(err), "err");
   }
 });
 // natartos install: gated on a real release existing (none yet → stays inert).
