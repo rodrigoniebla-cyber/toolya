@@ -585,6 +585,7 @@ function updateNatInstall() {
   btn("nat-noverity", !(DRY || adb));
   btn("doom-dl", !(DRY || adb));
   btn("nat-dump", !(DRY || adb));
+  btn("pull-go", !(DRY || adb));
 }
 function renderMods(m: Manifest) {
   const list = $("mod-list");
@@ -795,6 +796,30 @@ $("nat-dump").addEventListener("click", async () => {
     reportAdbError("dump", err);
   } finally {
     btn("nat-dump", false);
+  }
+});
+$("pull-go").addEventListener("click", async () => {
+  if (!adb) return;
+  const path = ($("pull-path") as HTMLInputElement).value.trim();
+  if (!path) return;
+  btn("pull-go", true);
+  log(`pulling ${path}…`);
+  try {
+    const bytes = await pullFile(adb, path);
+    const name = path.split("/").pop() || "file";
+    const url = URL.createObjectURL(new Blob([bytes as BufferSource], { type: "application/octet-stream" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    log(`pulled ${path} — ${bytes.length} bytes → ${name}`);
+  } catch (err) {
+    reportAdbError("pull", err);
+  } finally {
+    btn("pull-go", false);
   }
 });
 $("dump-copy").addEventListener("click", () => {
