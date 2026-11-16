@@ -4,6 +4,7 @@ reference/__pycache__/
 node_modules/
 web/node_modules/
 web/dist/
+web/dist-single/
 core/pkg/
 core/pkg-node/
 web/vendor/
