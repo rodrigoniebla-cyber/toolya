@@ -21,3 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# macOS: compile libusb into the binary (adb_client → rusb → libusb1-sys), so the
+# CI-built toolya runs on a Mac without Homebrew's libusb.
+[target.'cfg(target_os = "macos")'.dependencies]
+libusb1-sys = { version = "0.7", features = ["vendored"] }

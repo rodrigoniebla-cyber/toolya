@@ -1,0 +1,55 @@
+name: macOS tools
+
+# Builds a ready-to-run download for Mac users: the toolya CLI and toolya-display,
+# universal (Apple Silicon + Intel), no Homebrew / Rust / Xcode needed to run.
+on:
+  workflow_dispatch:
+  push:
+    paths: ["cli/**", "core/**", "mac/**", "Cargo.toml", "Cargo.lock", ".github/workflows/macos-tools.yml"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build toolya (universal)
+        run: |
+          cargo build --release -p toolya --target aarch64-apple-darwin
+          cargo build --release -p toolya --target x86_64-apple-darwin
+          mkdir -p out/toolya-macos
+          lipo -create -output out/toolya-macos/toolya \
+            target/aarch64-apple-darwin/release/toolya target/x86_64-apple-darwin/release/toolya
+
+      - name: Build toolya-display (universal)
+        working-directory: mac/display
+        run: |
+          swift build -c release --arch arm64 --arch x86_64
+          cp .build/apple/Products/Release/toolya-display ../../out/toolya-macos/
+
+      - name: Sign (ad-hoc) and check the binaries are self-contained
+        run: |
+          for b in out/toolya-macos/toolya out/toolya-macos/toolya-display; do
+            codesign --force --sign - "$b"
+            lipo -info "$b"
+            otool -L "$b"
+            if otool -L "$b" | grep -E "/opt/homebrew|/usr/local"; then
+              echo "::error::$b links a Homebrew library"; exit 1
+            fi
+          done
+          out/toolya-macos/toolya --version
+          out/toolya-macos/toolya-display --help | head -3
+
+      - name: Package
+        run: |
+          cp mac/QUICKSTART.md out/toolya-macos/README.md
+          tar -C out -czf toolya-macos.tar.gz toolya-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toolya-macos
+          path: toolya-macos.tar.gz

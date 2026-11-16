@@ -355,6 +355,24 @@ fn shell(dev: &mut AdbConn, cmd: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
+/// `toolya shell <command...>` — run one command on the goggles (root) and print
+/// its output. Uses toolya's own USB ADB, so no Android platform-tools needed.
+pub fn cmd_shell(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("usage: toolya shell <command...>   (quote it: toolya shell \"ls /data/local/tmp\")");
+        std::process::exit(1);
+    }
+    let cmd = args.join(" ");
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    };
+    match shell(&mut dev, &cmd) {
+        Ok(out) => print!("{out}"),
+        Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+    }
+}
+
 fn push_file(dev: &mut AdbConn, local: &Path, remote: &str) -> Result<(), String> {
     let mut f = File::open(local).map_err(|e| format!("open {}: {e}", local.display()))?;
     dev.push(&mut f, &remote).map_err(|e| format!("push → {remote}: {e}"))?;

@@ -1257,6 +1257,7 @@ version = "0.0.1"
 dependencies = [
  "adb_client",
  "image",
+ "libusb1-sys",
  "nusb",
  "pollster",
  "serde",

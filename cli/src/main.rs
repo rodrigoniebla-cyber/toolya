@@ -17,7 +17,6 @@ use std::process::exit;
 // Not yet implemented. snap/stream/push/pull DO work — they live under the
 // natartos modloader and are aliased at the top level in main() below.
 const STUBS: &[(&str, &str)] = &[
-    ("shell", "RE needed · interactive shell is broken on the G3"),
     ("log", "RE needed · adb logcat wrapper"),
     ("power", "RE needed · power off/on (cmd_id unknown)"),
     ("awake", "RE needed · inhibit auto-sleep"),
@@ -43,6 +42,7 @@ fn usage() {
     eprintln!("  selinux <status|permissive|enforcing> [--yes]  session SELinux toggle (devmem)");
     eprintln!("  input <key|down|up|raw>  send evdev events (BACK/OK/UP/DOWN/LEFT/RIGHT)");
     eprintln!("  natartos <sub>          mod framework (install/push/status/log/safe/...)");
+    eprintln!("  shell <command...>      run a command on the goggles (root), print output");
     eprintln!("  snap|stream|push|pull   on-device capture / transfer (needs natartos)");
     eprintln!("  desk                    show desk-mode step sequence");
     eprintln!("\nnot implemented yet:");
@@ -152,6 +152,7 @@ fn main() {
         "selinux" => selinux::run(&args[1..]),
         "input" => input::run(&args[1..]),
         "natartos" => natartos::run(&args[1..]),
+        "shell" => natartos::cmd_shell(&args[1..]),
         // These are implemented inside the natartos modloader; expose them at the
         // top level too (they need natartos installed on the goggles).
         "snap" | "stream" | "push" | "pull" => natartos::run(&args),
