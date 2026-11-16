@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
 import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, ensureDoomWad, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
-import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile } from "./adb";
+import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosBootStart, natartosBootStatus, natartosDump, pushFile, pullFile } from "./adb";
 import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
@@ -457,6 +457,14 @@ async function refreshNatartos() {
       : "not installed";
     $("nat-boot").textContent = s.bootcount;
     ($("nat-safe") as HTMLInputElement).checked = s.disabled;
+    // Boot start (power-on menu): only toggleable once natartos is installed.
+    const bootCk = $("nat-bootstart") as HTMLInputElement;
+    bootCk.disabled = !s.installed;
+    if (s.installed) {
+      try { bootCk.checked = (await natartosBootStatus(adb)).enabled; } catch { /* leave as-is */ }
+    } else {
+      bootCk.checked = false;
+    }
     const modsEl = $("nat-mods");
     if (s.mods.length > 0) {
       // Each entry is "<name>.so" or "<name>.so (enabled)". Show as chips with
@@ -539,6 +547,29 @@ $("nat-safe").addEventListener("change", async (e) => {
     await natartosSafe(adb, on);
   } catch (err) {
     reportAdbError("natartos safe", err);
+  }
+});
+$("nat-bootstart").addEventListener("change", async (e) => {
+  if (!adb) return;
+  const ck = e.target as HTMLInputElement;
+  const on = ck.checked;
+  if (on && !confirm(
+    "Show the Stock/Modified menu at power-on?\n\n" +
+    "Experimental and unverified. It stays on /vendor (never /system), and an " +
+    "unattended or failed boot lands on Stock. Test with USB connected so you " +
+    "can turn it off if a boot misbehaves.")) {
+    ck.checked = false;
+    return;
+  }
+  log(`natartos boot start → ${on ? "ON (menu at power-on)" : "OFF (stock at power-on)"}`);
+  try {
+    await natartosBootStart(adb, on);
+    showNatBanner(on
+      ? "Boot start ON — the Stock/Modified menu will show at power-on."
+      : "Boot start OFF — power-on returns to stock.", "ok");
+  } catch (err) {
+    ck.checked = !on;
+    reportAdbError("natartos boot start", err);
   }
 });
 // natartos install: gated on a real release existing (none yet → stays inert).

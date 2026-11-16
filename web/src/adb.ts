@@ -214,6 +214,62 @@ export async function natartosSafe(adb: Adb, on: boolean): Promise<void> {
   else await run(adb, `rm -f ${n.disabled}; printf '\\x00\\x00\\x00\\x00' > ${n.bootcount}`);
 }
 
+// --- boot start (experimental power-on menu) ---
+
+const BOOT_RC_DEVICE = "/vendor/etc/init/natartos.rc";
+const BOOT_SH_DEVICE = "/vendor/natartos/boot.sh";
+const BOOT_FLAG = "/data/.natartos_boot_enabled";
+
+// Shipped to /vendor/etc/init/ (never /system). Keep in sync with
+// natartos:deploy/natartos.rc.
+const BOOT_RC_CONTENT = `# natartos.rc — OPT-IN boot start for natartos (installed by toolya).
+service natartos_boot /system/bin/sh /vendor/natartos/boot.sh
+    class late_start
+    user root
+    group root system
+    seclabel u:r:su:s0
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start natartos_boot
+`;
+
+export interface BootStartStatus {
+  rc: boolean;      // the init .rc is on the device
+  sh: boolean;      // boot.sh (installed with natartos) is present
+  flag: boolean;    // the master enable flag is set
+  enabled: boolean; // all three → menu shows at power-on
+}
+
+export async function natartosBootStatus(adb: Adb): Promise<BootStartStatus> {
+  const has = async (p: string) =>
+    (await run(adb, `[ -f ${p} ] && echo 1 || echo 0`)).trim() === "1";
+  const rc = await has(BOOT_RC_DEVICE);
+  const sh = await has(BOOT_SH_DEVICE);
+  const flag = await has(BOOT_FLAG);
+  return { rc, sh, flag, enabled: rc && sh && flag };
+}
+
+/** Turn the power-on Stock/Modified menu on or off.
+ *  on  → install the init .rc (if missing) + set the enable flag.
+ *  off → clear the flag (the .rc stays but is inert). */
+export async function natartosBootStart(adb: Adb, on: boolean): Promise<void> {
+  if (on) {
+    const sh = (await run(adb, `[ -f ${BOOT_SH_DEVICE} ] && echo 1 || echo 0`)).trim() === "1";
+    if (!sh) throw new Error("boot.sh is not installed — install/update natartos first.");
+    await run(adb, "mount -o remount,rw /vendor");
+    await run(adb, "mkdir -p /vendor/etc/init");
+    await pushFile(adb, BOOT_RC_DEVICE, new TextEncoder().encode(BOOT_RC_CONTENT));
+    await run(adb, `chmod 644 ${BOOT_RC_DEVICE}`);
+    await run(adb, `touch ${BOOT_FLAG}`);
+    await run(adb, "sync");
+  } else {
+    await run(adb, `rm -f ${BOOT_FLAG}`);
+    await run(adb, "sync");
+  }
+}
+
 export async function setUsbMode(adb: Adb, mode: UsbMode): Promise<void> {
   const cfg = await usbCfgString(mode);
   await run(adb, `setprop sys.usb.config none; sleep 2; setprop sys.usb.config ${cfg}`).catch(() => {
