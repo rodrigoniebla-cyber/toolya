@@ -394,6 +394,10 @@ pub fn run(args: &[String]) {
         "uninstall" => cmd_uninstall(args.iter().any(|a| a == "--yes")),
         "status" => cmd_status(),
         "safe" => cmd_safe(args.get(1).map(String::as_str)),
+        "boot" => {
+            let local = flag_value(args, "--local").map(PathBuf::from);
+            cmd_boot(args.get(1).map(String::as_str), local.as_deref());
+        }
         "push" => {
             let dir = flag_value(args, "--local").map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("dist"));
@@ -446,6 +450,7 @@ pub fn run(args: &[String]) {
             eprintln!("  uninstall [--yes]");
             eprintln!("  versions                GitHub releases");
             eprintln!("  safe [on|off]           kill-switch");
+            eprintln!("  boot [on|off|purge]     start the Stock/Modified menu at power-on (experimental)");
             exit(1);
         }
     }
@@ -459,6 +464,94 @@ fn flag_value(args: &[String], flag: &str) -> Option<String> {
 /// True when `val` is the value part of a --flag val pair.
 fn is_flag_value(args: &[String], val: &str) -> bool {
     args.windows(2).any(|w| w[0].starts_with("--") && w[1] == val)
+}
+
+// --- boot start (experimental power-on menu) ---
+
+const BOOT_RC_DEVICE: &str = "/vendor/etc/init/natartos.rc";
+const BOOT_SH_DEVICE: &str = "/vendor/natartos/boot.sh";
+const BOOT_FLAG_PATH: &str = "/data/.natartos_boot_enabled";
+
+/// Find a local natartos.rc to push (--local dir, then ./dist, ./deploy).
+fn find_boot_rc(local: Option<&Path>) -> Option<PathBuf> {
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Some(d) = local {
+        cands.push(d.join("natartos.rc"));
+    }
+    cands.push(PathBuf::from("dist/natartos.rc"));
+    cands.push(PathBuf::from("deploy/natartos.rc"));
+    cands.into_iter().find(|p| p.is_file())
+}
+
+fn cmd_boot(arg: Option<&str>, local: Option<&Path>) {
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); exit(1); }
+    };
+
+    let on_dev = |dev: &mut AdbConn, p: &str| {
+        shell(dev, &format!("[ -f {p} ] && echo yes || echo no"))
+            .map(|s| s.trim() == "yes").unwrap_or(false)
+    };
+
+    match arg {
+        Some("on") => {
+            if !on_dev(&mut dev, BOOT_SH_DEVICE) {
+                eprintln!("boot.sh is not on the device ({BOOT_SH_DEVICE}).");
+                eprintln!("Install/update natartos first:  toolya natartos install");
+                exit(1);
+            }
+            // Ensure the init .rc is present; push it if the device lacks it.
+            if !on_dev(&mut dev, BOOT_RC_DEVICE) {
+                let Some(rc) = find_boot_rc(local) else {
+                    eprintln!("natartos.rc not on device and no local copy found.");
+                    eprintln!("Run from the natartos repo (deploy/natartos.rc) or pass --local <dir>.");
+                    exit(1);
+                };
+                print!("Installing {BOOT_RC_DEVICE} ... ");
+                let _ = shell(&mut dev, "mount -o remount,rw /vendor");
+                let _ = shell(&mut dev, "mkdir -p /vendor/etc/init");
+                if let Err(e) = push_file(&mut dev, &rc, BOOT_RC_DEVICE) {
+                    println!("FAIL");
+                    eprintln!("{e}");
+                    exit(1);
+                }
+                let _ = shell(&mut dev, &format!("chmod 644 {BOOT_RC_DEVICE}"));
+                println!("ok ({})", rc.display());
+            }
+            let _ = shell(&mut dev, &format!("touch {BOOT_FLAG_PATH}"));
+            let _ = shell(&mut dev, "sync");
+            println!("boot start ON — the Stock/Modified menu will show at power-on.");
+            println!("  Safe default: an unattended or failed boot lands on STOCK.");
+            println!("  Turn off:     toolya natartos boot off");
+            println!("  NOTE: unverified on hardware. Test with USB connected so you can");
+            println!("        run `toolya natartos safe on` if a boot misbehaves.");
+        }
+        Some("off") => {
+            let _ = shell(&mut dev, &format!("rm -f {BOOT_FLAG_PATH}"));
+            let _ = shell(&mut dev, "sync");
+            println!("boot start OFF — power-on returns to stock (the .rc stays, but is inert).");
+            println!("  Remove entirely:  toolya natartos boot purge");
+        }
+        Some("purge") => {
+            let _ = shell(&mut dev, "mount -o remount,rw /vendor");
+            let _ = shell(&mut dev, &format!("rm -f {BOOT_FLAG_PATH}"));
+            let _ = shell(&mut dev, &format!("rm -f {BOOT_RC_DEVICE}"));
+            let _ = shell(&mut dev, "sync");
+            println!("boot start purged — flag and {BOOT_RC_DEVICE} removed.");
+        }
+        _ => {
+            let rc = on_dev(&mut dev, BOOT_RC_DEVICE);
+            let sh = on_dev(&mut dev, BOOT_SH_DEVICE);
+            let flag = on_dev(&mut dev, BOOT_FLAG_PATH);
+            let enabled = rc && sh && flag;
+            println!("boot start: {}", if enabled { "ON" } else { "off" });
+            println!("  init .rc ({BOOT_RC_DEVICE}): {}", if rc { "present" } else { "missing" });
+            println!("  boot.sh ({BOOT_SH_DEVICE}): {}", if sh { "present" } else { "missing" });
+            println!("  enable flag ({BOOT_FLAG_PATH}): {}", if flag { "set" } else { "unset" });
+            println!("\nusage: toolya natartos boot <on|off|purge>");
+        }
+    }
 }
 
 // --- push (fast dev cycle) ---
