@@ -1,0 +1,58 @@
+name: CLI macOS
+
+# Builds the toolya CLI for macOS on a real macOS runner (the libusb backend
+# needs the Apple SDK headers, so it can't be cross-compiled from Linux).
+# Produces arm64, x86_64, and a universal binary as artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-macos-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (arm64 + x86_64)
+        run: |
+          cargo build -p toolya --release --locked --target aarch64-apple-darwin
+          cargo build -p toolya --release --locked --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/toolya dist/toolya-macos-arm64
+          cp target/x86_64-apple-darwin/release/toolya  dist/toolya-macos-x86_64
+          lipo -create -output dist/toolya-macos-universal \
+            dist/toolya-macos-arm64 dist/toolya-macos-x86_64
+          lipo -info dist/toolya-macos-universal
+          cd dist && shasum -a 256 toolya-macos-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolya-macos
+          path: dist/
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/toolya-macos-*
