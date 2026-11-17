@@ -251,6 +251,43 @@ function bootPayload(): BootFile[] | null {
   const g = (globalThis as unknown as { __NATARTOS_BOOT_FILES__?: unknown }).__NATARTOS_BOOT_FILES__;
   return Array.isArray(g) && g.length > 0 ? (g as BootFile[]) : null;
 }
+// Optional embedded SELinux policy patch (base64 of a patched precompiled_sepolicy
+// that marks vendor_init permissive). When present, the toggle runtime-load-tests
+// it into the live kernel first, and only persists it to /vendor if the kernel
+// accepts it — so an untested policy can never bootloop the device.
+function sepolicyPayload(): string | null {
+  const g = (globalThis as unknown as { __NATARTOS_SEPOLICY__?: unknown }).__NATARTOS_SEPOLICY__;
+  return typeof g === "string" && g.length > 0 ? g : null;
+}
+const SEPOL_DEV = "/data/local/tmp/natartos_sepol_patched";
+const SEPOL_LIVE = "/vendor/etc/selinux/precompiled_sepolicy";
+const SEPOL_BACKUP = "/vendor/etc/selinux/precompiled_sepolicy.natartos_orig";
+// devmem addresses for the SELinux enforce byte (per toolya contract).
+const PERMISSIVE_SH =
+  'for A in 0x17b6648 0x17e6888; do V=$(busybox devmem $A 32 2>/dev/null) || continue; ' +
+  'case "$V" in 0x01000100|0x01000000) busybox devmem $(printf 0x%X $((A+1))) 8 0x00; break;; esac; done';
+
+/** Install the SELinux patch brick-safely: load into the running kernel first
+ *  (a failed load changes nothing), and only persist to /vendor on success. */
+async function installSepolicy(adb: Adb, b64: string, log?: (s: string) => void): Promise<void> {
+  log?.("pushing SELinux patch…");
+  await pushFile(adb, SEPOL_DEV, b64ToBytes(b64));
+  log?.("runtime-load test (no reboot risk)…");
+  const script =
+    PERMISSIVE_SH + "; " +
+    `dd if=${SEPOL_DEV} of=/sys/fs/selinux/load bs=1M 2>/dev/null; LRC=$?; ` +
+    'echo "LOAD_RC=$LRC"; ' +
+    'if [ "$LRC" != "0" ]; then echo NAT_ABORT; exit 0; fi; ' +
+    PERMISSIVE_SH + "; " +                       // load may reset the enforce byte
+    "mount -o remount,rw /vendor; " +
+    `[ -f ${SEPOL_BACKUP} ] || cp ${SEPOL_LIVE} ${SEPOL_BACKUP}; ` +
+    `cp ${SEPOL_DEV} ${SEPOL_LIVE}; sync; echo NAT_POLICY_OK`;
+  const out = await run(adb, script);
+  if (out.includes("NAT_ABORT") || !out.includes("NAT_POLICY_OK")) {
+    throw new Error("the kernel rejected the SELinux patch — nothing was changed on /vendor. " + out.trim().slice(-200));
+  }
+  log?.("SELinux patch accepted by the kernel and saved (backup kept).");
+}
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
@@ -281,6 +318,10 @@ export async function natartosBootStart(
 ): Promise<void> {
   if (!on) {
     await run(adb, `rm -f ${BOOT_FLAG}`);
+    // Revert the SELinux patch too (restore the stock policy from our backup).
+    await run(adb,
+      `if [ -f ${SEPOL_BACKUP} ]; then mount -o remount,rw /vendor; ` +
+      `cp ${SEPOL_BACKUP} ${SEPOL_LIVE} && rm -f ${SEPOL_BACKUP}; sync; fi`);
     await run(adb, "sync");
     return;
   }
@@ -296,6 +337,9 @@ export async function natartosBootStart(
       await pushFile(adb, f.path, b64ToBytes(f.b64));
       await run(adb, `chmod ${f.mode} ${f.path}`);
     }
+    // Install the SELinux patch (brick-safe: runtime-tested before persisting).
+    const sepol = sepolicyPayload();
+    if (sepol) await installSepolicy(adb, sepol, log);
   } else {
     // No payload: the boot files must already be installed with natartos.
     const sh = (await run(adb, `[ -f ${BOOT_SH_DEVICE} ] && echo 1 || echo 0`)).trim() === "1";
