@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
 import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, ensureDoomWad, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
-import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosBootStart, natartosBootStatus, natartosDump, pushFile, pullFile } from "./adb";
+import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosBootStart, natartosBootStatus, natartosPolicyResult, natartosDump, pushFile, pullFile } from "./adb";
 import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
@@ -461,7 +461,18 @@ async function refreshNatartos() {
     const bootCk = $("nat-bootstart") as HTMLInputElement;
     bootCk.disabled = !s.installed;
     if (s.installed) {
-      try { bootCk.checked = (await natartosBootStatus(adb)).enabled; } catch { /* leave as-is */ }
+      try {
+        bootCk.checked = (await natartosBootStatus(adb)).enabled;
+        // Surface the result of a detached SELinux-patch install, if any.
+        const pr = await natartosPolicyResult(adb);
+        if (pr === "rejected") {
+          showNatBanner("The kernel rejected the SELinux patch — nothing was saved, boot start is not enabled.", "err");
+        } else if (pr === "ok" && bootCk.checked) {
+          showNatBanner("SELinux patch installed and boot start is ON — reboot the goggles to get the menu at power-on.", "ok");
+        } else if (pr === "pending") {
+          showNatBanner("Policy install still finishing — wait a few seconds and press Refresh again.", "busy");
+        }
+      } catch { /* leave as-is */ }
     } else {
       bootCk.checked = false;
     }
@@ -564,11 +575,17 @@ $("nat-bootstart").addEventListener("change", async (e) => {
   log(`natartos boot start → ${on ? "ON (menu at power-on)" : "OFF (stock at power-on)"}`);
   if (on) showNatBanner("Installing boot start…", "busy");
   try {
-    await natartosBootStart(adb, on, log);
-    showNatBanner(on
-      ? "Boot start ON — reboot the goggles and the Stock/Modified menu will show at power-on."
-      : "Boot start OFF — power-on returns to stock.", "ok");
-    await refreshNatartos();
+    const res = await natartosBootStart(adb, on, log);
+    if (res === "pending") {
+      // The SELinux patch loads into the live kernel, which drops the USB for a
+      // few seconds. The install finishes on-device on its own.
+      showNatBanner("Loading the SELinux patch — the USB will drop for a few seconds (that's the kernel loading the policy, expected). When it reconnects, press Refresh to confirm.", "busy");
+    } else {
+      showNatBanner(on
+        ? "Boot start ON — reboot the goggles and the Stock/Modified menu will show at power-on."
+        : "Boot start OFF — power-on returns to stock.", "ok");
+      await refreshNatartos();
+    }
   } catch (err) {
     ck.checked = !on;
     reportAdbError("natartos boot start", err);

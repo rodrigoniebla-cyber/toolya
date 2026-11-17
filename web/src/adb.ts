@@ -262,31 +262,56 @@ function sepolicyPayload(): string | null {
 const SEPOL_DEV = "/data/local/tmp/natartos_sepol_patched";
 const SEPOL_LIVE = "/vendor/etc/selinux/precompiled_sepolicy";
 const SEPOL_BACKUP = "/vendor/etc/selinux/precompiled_sepolicy.natartos_orig";
+const SEPOL_SCRIPT = "/data/local/tmp/natartos_policy_install.sh";
+const SEPOL_RESULT = "/data/local/tmp/natartos_policy_result";
 // devmem addresses for the SELinux enforce byte (per toolya contract).
 const PERMISSIVE_SH =
   'for A in 0x17b6648 0x17e6888; do V=$(busybox devmem $A 32 2>/dev/null) || continue; ' +
   'case "$V" in 0x01000100|0x01000000) busybox devmem $(printf 0x%X $((A+1))) 8 0x00; break;; esac; done';
 
-/** Install the SELinux patch brick-safely: load into the running kernel first
- *  (a failed load changes nothing), and only persist to /vendor on success. */
-async function installSepolicy(adb: Adb, b64: string, log?: (s: string) => void): Promise<void> {
+// Runs ON the device, detached (setsid), so the ADB/USB drop caused by the
+// live policy load can't interrupt it. Load-tests the patch into the running
+// kernel; only on success does it back up the stock policy, persist the patch,
+// and set the enable flag. Writes OK / REJECTED to SEPOL_RESULT either way.
+const SEPOL_INSTALL_SCRIPT =
+  "#!/system/bin/sh\n" +
+  "sleep 1\n" +
+  `rm -f ${SEPOL_RESULT}\n` +
+  `perm() { ${PERMISSIVE_SH}; }\n` +
+  "perm\n" +
+  `dd if=${SEPOL_DEV} of=/sys/fs/selinux/load bs=1M 2>/dev/null; L=$?\n` +
+  "perm\n" +                                   // the load resets the enforce byte
+  'if [ "$L" = 0 ]; then\n' +
+  "  mount -o remount,rw /vendor\n" +
+  `  [ -f ${SEPOL_BACKUP} ] || cp ${SEPOL_LIVE} ${SEPOL_BACKUP}\n` +
+  `  cp ${SEPOL_DEV} ${SEPOL_LIVE}\n` +
+  `  touch ${BOOT_FLAG}\n` +
+  "  sync\n" +
+  `  echo OK > ${SEPOL_RESULT}\n` +
+  "else\n" +
+  `  echo REJECTED > ${SEPOL_RESULT}\n` +
+  "fi\n";
+
+/** Kick off the detached policy install. Returns immediately; the live-load
+ *  drops the USB a moment later, so the caller must stop touching ADB and have
+ *  the user reconnect + refresh to read the result. */
+async function installSepolicyDetached(adb: Adb, b64: string, log?: (s: string) => void): Promise<void> {
   log?.("pushing SELinux patch…");
   await pushFile(adb, SEPOL_DEV, b64ToBytes(b64));
-  log?.("runtime-load test (no reboot risk)…");
-  const script =
-    PERMISSIVE_SH + "; " +
-    `dd if=${SEPOL_DEV} of=/sys/fs/selinux/load bs=1M 2>/dev/null; LRC=$?; ` +
-    'echo "LOAD_RC=$LRC"; ' +
-    'if [ "$LRC" != "0" ]; then echo NAT_ABORT; exit 0; fi; ' +
-    PERMISSIVE_SH + "; " +                       // load may reset the enforce byte
-    "mount -o remount,rw /vendor; " +
-    `[ -f ${SEPOL_BACKUP} ] || cp ${SEPOL_LIVE} ${SEPOL_BACKUP}; ` +
-    `cp ${SEPOL_DEV} ${SEPOL_LIVE}; sync; echo NAT_POLICY_OK`;
-  const out = await run(adb, script);
-  if (out.includes("NAT_ABORT") || !out.includes("NAT_POLICY_OK")) {
-    throw new Error("the kernel rejected the SELinux patch — nothing was changed on /vendor. " + out.trim().slice(-200));
-  }
-  log?.("SELinux patch accepted by the kernel and saved (backup kept).");
+  await pushFile(adb, SEPOL_SCRIPT, new TextEncoder().encode(SEPOL_INSTALL_SCRIPT));
+  await run(adb, `rm -f ${SEPOL_RESULT}`);
+  log?.("starting policy load — USB will drop for a few seconds (expected). Reconnect, then Refresh.");
+  // setsid detaches it from this adb shell so it survives the USB reset.
+  await run(adb, `setsid sh ${SEPOL_SCRIPT} </dev/null >/dev/null 2>&1 &`);
+}
+
+/** Read the detached policy install's result, if present. */
+export async function natartosPolicyResult(adb: Adb): Promise<"ok" | "rejected" | "pending" | "none"> {
+  const r = (await run(adb, `cat ${SEPOL_RESULT} 2>/dev/null`)).trim();
+  if (r === "OK") return "ok";
+  if (r === "REJECTED") return "rejected";
+  const exists = (await run(adb, `[ -f ${SEPOL_SCRIPT} ] && echo 1 || echo 0`)).trim() === "1";
+  return exists ? "pending" : "none";
 }
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -315,15 +340,15 @@ export async function natartosBootStart(
   adb: Adb,
   on: boolean,
   log?: (s: string) => void,
-): Promise<void> {
+): Promise<"ok" | "pending"> {
   if (!on) {
-    await run(adb, `rm -f ${BOOT_FLAG}`);
+    await run(adb, `rm -f ${BOOT_FLAG} ${SEPOL_RESULT} ${SEPOL_SCRIPT}`);
     // Revert the SELinux patch too (restore the stock policy from our backup).
     await run(adb,
       `if [ -f ${SEPOL_BACKUP} ]; then mount -o remount,rw /vendor; ` +
       `cp ${SEPOL_BACKUP} ${SEPOL_LIVE} && rm -f ${SEPOL_BACKUP}; sync; fi`);
     await run(adb, "sync");
-    return;
+    return "ok";
   }
 
   // The device boots enforcing — go permissive first, or writing /vendor (and
@@ -340,9 +365,14 @@ export async function natartosBootStart(
       await pushFile(adb, f.path, b64ToBytes(f.b64));
       await run(adb, `chmod ${f.mode} ${f.path}`);
     }
-    // Install the SELinux patch (brick-safe: runtime-tested before persisting).
+    // Install the SELinux patch. The live-load drops the USB, so this runs
+    // detached and sets the enable flag itself on success — we return "pending"
+    // and the user reconnects + refreshes to read the result.
     const sepol = sepolicyPayload();
-    if (sepol) await installSepolicy(adb, sepol, log);
+    if (sepol) {
+      await installSepolicyDetached(adb, sepol, log);
+      return "pending";
+    }
   } else {
     // No payload: the boot files must already be installed with natartos.
     const sh = (await run(adb, `[ -f ${BOOT_SH_DEVICE} ] && echo 1 || echo 0`)).trim() === "1";
@@ -354,6 +384,7 @@ export async function natartosBootStart(
 
   await run(adb, `touch ${BOOT_FLAG}`);
   await run(adb, "sync");
+  return "ok";
 }
 
 export async function setUsbMode(adb: Adb, mode: UsbMode): Promise<void> {
