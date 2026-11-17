@@ -281,7 +281,10 @@ const SEPOL_INSTALL_SCRIPT =
   `rm -f ${SEPOL_RESULT}\n` +
   `perm() { ${PERMISSIVE_SH}; }\n` +
   "perm\n" +
-  `dd if=${SEPOL_DEV} of=/sys/fs/selinux/load bs=1M 2>/dev/null; L=$?\n` +
+  // bs must exceed the policy size: /sys/fs/selinux/load needs the whole policy
+  // in ONE write(). Use a plain byte count — this device's toybox dd rejects the
+  // "1M" suffix ("illegal number"), which silently failed every earlier install.
+  `dd if=${SEPOL_DEV} of=/sys/fs/selinux/load bs=8388608 2>/dev/null; L=$?\n` +
   "perm\n" +                                   // the load resets the enforce byte
   'if [ "$L" = 0 ]; then\n' +
   "  mount -o remount,rw /vendor\n" +
