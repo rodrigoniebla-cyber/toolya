@@ -223,15 +223,17 @@ const BOOT_FLAG = "/data/.natartos_boot_enabled";
 // Shipped to /vendor/etc/init/ (never /system). Keep in sync with
 // natartos:deploy/natartos.rc.
 const BOOT_RC_CONTENT = `# natartos.rc — OPT-IN boot start for natartos (installed by toolya).
+# Runs as vendor_init (made permissive by the SELinux patch); triggered by the
+# property DJI sets to start the display, since sys.boot_completed never fires.
 service natartos_boot /system/bin/sh /vendor/natartos/boot.sh
     class late_start
     user root
     group root system
-    seclabel u:r:su:s0
+    seclabel u:r:vendor_init:s0
     oneshot
     disabled
 
-on property:sys.boot_completed=1
+on property:dji.glasses_service=1
     start natartos_boot
 `;
 
