@@ -326,6 +326,9 @@ export async function natartosBootStart(
     return;
   }
 
+  // The device boots enforcing — go permissive first, or writing /vendor (and
+  // /sys/fs/selinux/load for the policy test) is denied.
+  await run(adb, PERMISSIVE_SH);
   await run(adb, "mount -o remount,rw /vendor");
 
   const payload = bootPayload();
