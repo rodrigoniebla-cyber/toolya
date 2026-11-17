@@ -466,8 +466,10 @@ async function refreshNatartos() {
         // Surface the result of a detached SELinux-patch install, if any.
         const pr = await natartosPolicyResult(adb);
         if (pr === "rejected") {
+          bootInstallPending = false;
           showNatBanner("The kernel rejected the SELinux patch — nothing was saved, boot start is not enabled.", "err");
         } else if (pr === "ok" && bootCk.checked) {
+          bootInstallPending = false;
           showNatBanner("SELinux patch installed and boot start is ON — reboot the goggles to get the menu at power-on.", "ok");
         } else if (pr === "pending") {
           showNatBanner("Policy install still finishing — wait a few seconds and press Refresh again.", "busy");
@@ -578,8 +580,17 @@ $("nat-bootstart").addEventListener("change", async (e) => {
     const res = await natartosBootStart(adb, on, log);
     if (res === "pending") {
       // The SELinux patch loads into the live kernel, which drops the USB for a
-      // few seconds. The install finishes on-device on its own.
-      showNatBanner("Loading the SELinux patch — the USB will drop for a few seconds (that's the kernel loading the policy, expected). When it reconnects, press Refresh to confirm.", "busy");
+      // few seconds. The install finishes on-device on its own; the user must
+      // reconnect + Refresh to read the result. The flag re-shows this after the
+      // drop resets the UI (see disconnect()).
+      bootInstallPending = true;
+      showNatBanner(
+        "<b>⚠️ The connection is about to drop — that's expected, not an error.</b><br>" +
+        "Loading the SELinux patch resets the USB link. The install keeps running " +
+        "<b>on the goggles</b> by itself.<br><br>" +
+        "<b>What to do:</b> wait ~10 seconds, click <b>Connect</b> to reconnect, then press " +
+        "<b>Refresh</b> in this panel. Refreshing is how it checks whether the patch took " +
+        "(✅ installed / ⛔ rejected).", "busy");
     } else {
       showNatBanner(on
         ? "Boot start ON — reboot the goggles and the Stock/Modified menu will show at power-on."
@@ -592,6 +603,10 @@ $("nat-bootstart").addEventListener("change", async (e) => {
     showNatBanner("Boot start failed: " + friendlyError(err), "err");
   }
 });
+// Set while a detached SELinux-patch install is finishing on the device. The
+// live policy load drops the USB, so disconnect() re-shows the reconnect+Refresh
+// instruction, and refreshNatartos() clears this once it reads a result.
+let bootInstallPending = false;
 // natartos install: gated on a real release existing (none yet → stays inert).
 let natRelease: Release | null = null;
 let natManifest: Manifest | null = null;
@@ -1049,6 +1064,14 @@ async function disconnect() {
   btn("nat-dump", true);
   $("nat-mods").hidden = true;
   if (canUsb) btn("btn-connect", false);
+  // If a SELinux-patch install was in flight, this disconnect is the expected
+  // USB drop. Keep a loud, actionable banner on screen through it.
+  if (bootInstallPending) {
+    showNatBanner(
+      "<b>🔌 Disconnected — this is the expected USB drop, not a failure.</b><br>" +
+      "The SELinux patch is finishing on the goggles. Click <b>Connect</b> to reconnect, " +
+      "then press <b>Refresh</b> in the natartos panel to check whether it installed.", "busy");
+  }
   log("disconnected");
 }
 
